@@ -1,0 +1,130 @@
+1. What It Does
+
+The High-Performance Time-Series Analytics API is a production-grade backend service built to ingest, aggregate, and query high-volume time-series telemetry data (such as web page views, user signups, purchases, and system log events). It handles incoming HTTP event streams, performs asynchronous background rollups, enforces sliding-window rate limiting, and serves real-time and historical analytical queries with sub-500ms response times.
+
+2. Core Purpose & Problem It Solves
+
+In high-traffic systems, applications generate millions of event records daily. Querying raw data directly using naive SQL queries (like COUNT(*) over millions of rows) causes severe database slowdowns, high CPU usage, and high query latency.
+
+
+This project solves these issues by:
+
+Decoupling ingestion from processing: 
+Raw events are quickly written to an indexed append-only log table (raw_events).
+
+Pre-computing aggregations (Rollups): 
+Asynchronous background workers summarize raw events into hourly_stats and daily_stats tables.
+
+Intelligent Query Routing: 
+Analytical queries route to fast pre-aggregated tables for historical data while querying raw events only for the ongoing real-time window.
+
+API Protection & Caching: 
+Redis protects the ingestion API from traffic spikes using a sliding-window rate limiter and accelerates dashboard queries via response caching.
+
+
+🛠️ Technologies Used & How Each Technology Helps
+Technology	Role in System	How It Helps & Why It Was Chosen
+
+Node.js & Express: API Web Server & Routing	
+Its single-threaded, non-blocking event-driven I/O model is lightweight and highly efficient for high-concurrency HTTP event ingestion workloads.
+
+PostgreSQL:	Relational Storage & Indexing	
+Serves as the persistent database layer. Features like B-tree indexes on timestamp DESC and event_type, flexible JSONB for unstructured metadata, and atomic UPSERT (INSERT ... ON CONFLICT) guarantee reliable data storage and idempotent rollups.
+
+Redis:	In-Memory Data Store & Cache	
+Enables sub-millisecond data access for two critical tasks:
+
+1. Sliding Window Rate Limiting: Uses Redis Sorted Sets (ZSET) to track request timestamps per client IP.
+2. Dashboard Caching: Caches expensive 24h summary queries with a 60s TTL.
+
+Node-Cron:	Task Scheduler	
+Schedules periodic background workers to execute hourly rollups, daily rollups, and raw data retention purges without blocking the main web server.
+
+Docker & Docker Compose	Infrastructure & Containerization	
+Packages the API service, PostgreSQL, and Redis into reproducible containers with health checks (pg_isready), ensuring setup across development and production environments.
+Jest & Supertest	Testing & Code Coverage	Provides automated unit and integration tests verifying all 10 project requirements with over 80% code coverage.
+
+
+🔍 How Each Functionality Is Implemented
+
++---------------------------------------+
+                     |         Client Applications           |
+                     +---------------------------------------+
+                        | (POST /events)     | (GET /analytics)
+                        v                    v
+          +-----------------------------------------------------+
+          |                  API Service                        |
+          |  - Express App                                      |
+          |  - Redis Sliding-Window Rate Limiter (200 req/min)  |
+          |  - Redis Response Cache (60s TTL for /dashboard)    |
+          |  - Smart Dynamic Query Router                       |
+          +-----------------------------------------------------+
+                 /               |                  \
+                /                |                   \
+               v                 v                    v
+      +-----------------+  +------------+   +-------------------+
+      | PostgreSQL DB   |  | Redis DB   |   | Background Workers|
+      | - raw_events    |  | - ZSET     |   | - Hourly Rollups  |
+      | - hourly_stats  |  |   Rate-Lim |   | - Daily Rollups   |
+      | - daily_stats   |  | - Summary  |   | - 30-day Purging  |
+      +-----------------+  |   Cache    |   +-------------------+
+                           +------------+
+
+1. Ingestion API (POST /events)
+Location: 
+
+src/api/events.js
+Implementation: Accepts a JSON payload containing event_type (required), timestamp (optional ISO 8601 string, defaulting to current UTC server time), and metadata (optional JSON object). Validates inputs and inserts records into raw_events. Returns HTTP 201 Created.
+
+2. Sliding-Window Rate Limiting
+Location: 
+
+src/middleware/rateLimiter.js
+Implementation: Executes a Redis pipeline per request using Sorted Sets (rate_limit:<ip>):
+ZREMRANGEBYSCORE: Removes request records older than 60 seconds ago (now - 60000).
+ZADD: Adds the current request timestamp with a unique UUID member.
+ZCARD: Counts requests remaining in the rolling 60-second window.
+EXPIRE: Sets a 60-second key expiration. If the count exceeds 200, the request is rejected with HTTP 429 Too Many Requests.
+
+3. Dynamic Query Routing Analytics (GET /analytics)
+Location: 
+
+src/api/analytics.js
+Implementation: Takes start_date, end_date, interval (hour or day), and optional event_type.
+Hour interval: Queries hourly_stats for completed hours in the range, and raw_events for the ongoing hour. It merges both datasets using SQL UNION ALL and SUM(count).
+Day interval: Queries daily_stats for completed historical days, hourly_stats for completed hours today, and raw_events for the ongoing hour today. This ensures real-time accuracy while maintaining fast sub-500ms query performance.
+
+4. Dashboard Summary & Caching (GET /dashboard/summary)
+Location: 
+
+src/api/dashboard.js & src/middleware/cache.js
+Implementation: Computes total event counts grouped by event_type over the last 24 rolling hours. Wrapped with custom cacheMiddleware that checks Redis key cache:/dashboard/summary.
+Cache Hit: Immediately returns stored JSON from Redis with header X-Cache: HIT.
+Cache Miss: Executes database query, sets Redis key with a 60-second TTL, and returns data with header X-Cache: MISS.
+
+5. Hourly Aggregation Worker
+Location: 
+
+src/workers/hourlyWorker.js
+Implementation: Runs periodically to query completed hours from raw_events grouped by date_trunc('hour', timestamp) and event_type. Uses PostgreSQL UPSERT logic:
+
+INSERT INTO hourly_stats (bucket_time, event_type, event_count)
+SELECT date_trunc('hour', timestamp), event_type, COUNT(*)
+FROM raw_events WHERE timestamp < date_trunc('hour', NOW())
+GROUP BY 1, 2
+ON CONFLICT (bucket_time, event_type)
+DO UPDATE SET event_count = EXCLUDED.event_count;
+
+This is idempotent: running it multiple times overwrites existing bucket counts safely without creating duplicates.
+
+6. Daily Aggregation Worker
+Location: 
+
+src/workers/dailyWorker.js
+Implementation: Aggregates rows from hourly_stats into daily_stats grouped by date_trunc('day', bucket_time) and event_type using ON CONFLICT DO UPDATE. Avoids costly full table scans over raw events.
+
+7. Data Retention & Housekeeping Worker
+Location: 
+
+src/workers/retentionWorker.js
+Implementation: Deletes records from raw_events older than 30 days (timestamp < NOW() - INTERVAL '30 days'). Deletes in controlled batches (e.g., 5,000 rows per query loop) to prevent table locks and database Write-Ahead Log (WAL) bloat. Preserves hourly_stats and daily_stats indefinitely.
