@@ -1,0 +1,136 @@
+# High-Performance Time-Series Analytics API - Git Bash Commands & Curl Testing Guide
+
+# ==============================================================================
+# Step 1: Start Infrastructure & API Service
+# ==============================================================================
+
+# Build and start API, PostgreSQL, and Redis containers in background
+
+
+docker-compose up -d --build
+
+
+# ==============================================================================
+# Step 2: Check API Health Endpoint
+# ==============================================================================
+
+
+curl -i http://localhost:8000/health
+
+
+# ==============================================================================
+# Step 3: Ingest Raw Events (POST /events)
+# ==============================================================================
+# 1. Ingest a pageview event (omitting timestamp, defaults to server UTC time)
+
+
+curl -i -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "pageview", "metadata": {"url": "/home", "user_id": "user_101"}}'
+
+# 2. Ingest a purchase event with explicit ISO 8601 timestamp
+
+
+curl -i -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "purchase", "timestamp": "2026-08-01T10:15:00Z", "metadata": {"amount": 49.99, "currency": "USD"}}'
+
+# 3. Ingest a signup event
+
+
+curl -i -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "signup", "metadata": {"plan": "pro"}}'
+
+
+# ==============================================================================
+# Step 4: Test Validation Errors (400 Bad Request)
+# ==============================================================================
+# Missing event_type payload
+
+
+curl -i -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"metadata": {"url": "/home"}}'
+
+# Invalid timestamp format payload
+
+
+curl -i -X POST http://localhost:8000/events \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "click", "timestamp": "not-a-valid-date"}'
+
+
+# ==============================================================================
+# Step 5: Test Background Worker Rollups & Data Retention
+# ==============================================================================
+# Run Hourly Aggregation Worker
+
+
+docker-compose exec api npm run worker:hourly
+
+# Run Daily Aggregation Worker
+
+
+docker-compose exec api npm run worker:daily
+
+# Run 30-Day Data Retention Purge Worker
+
+
+docker-compose exec api npm run worker:retention
+
+
+# ==============================================================================
+# Step 6: Query Analytics Endpoint (GET /analytics)
+# ==============================================================================
+# Query hourly aggregated stats for the last 24 hours
+
+
+curl -i "http://localhost:8000/analytics?start_date=2026-08-01T00:00:00Z&end_date=2026-08-01T23:59:59Z&interval=hour"
+
+# Query daily stats filtered by event_type=pageview
+
+
+curl -i "http://localhost:8000/analytics?start_date=2026-08-01T00:00:00Z&end_date=2026-08-01T23:59:59Z&interval=day&event_type=pageview"
+
+
+# ==============================================================================
+# Step 7: Test Dashboard Summary & Redis Caching (GET /dashboard/summary)
+# ==============================================================================
+# First request: Cache MISS (queries DB & sets Redis cache with 60s TTL)
+
+
+curl -i http://localhost:8000/dashboard/summary
+
+# Second request: Cache HIT (served directly from Redis in <1ms)
+
+
+curl -i http://localhost:8000/dashboard/summary
+
+
+# ==============================================================================
+# Step 8: Test Sliding Window Rate Limiting (429 Too Many Requests)
+# ==============================================================================
+# Send 205 rapid requests from the same client IP to trigger 429 after 200 reqs
+
+
+for i in {1..205}; do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/events \
+    -H "Content-Type: application/json" \
+    -d '{"event_type": "ping"}'
+done
+
+
+# ==============================================================================
+# Step 9: Run Automated Test Suite & Benchmark Load Test
+# ==============================================================================
+# Run Jest Automated Test Suite with Coverage
+
+
+docker-compose exec api npm run test:coverage
+
+
+# Run High-Volume Load Benchmark Script (<500ms p95 latency check)
+
+
+docker-compose exec api npm run benchmark
