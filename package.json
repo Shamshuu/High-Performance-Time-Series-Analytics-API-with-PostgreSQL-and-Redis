@@ -1,0 +1,31 @@
+{
+  "name": "high-performance-time-series-analytics-api",
+  "version": "1.0.0",
+  "description": "High-Performance Time-Series Analytics API with PostgreSQL and Redis",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node src/app.js",
+    "test": "jest --detectOpenHandles --forceExit",
+    "test:coverage": "jest --coverage --detectOpenHandles --forceExit",
+    "benchmark": "node scripts/load_test.js",
+    "worker:hourly": "node -e \"require('./src/workers/hourlyWorker').runHourlyRollup().then(() => process.exit(0))\"",
+    "worker:daily": "node -e \"require('./src/workers/dailyWorker').runDailyRollup().then(() => process.exit(0))\"",
+    "worker:retention": "node -e \"require('./src/workers/retentionWorker').runRetentionPurge().then(() => process.exit(0))\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "node-cron": "^3.0.3",
+    "pg": "^8.12.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
