@@ -105,7 +105,7 @@ For full diagram and detailed breakdown, see [ARCHITECTURE.md](file:///c:/GPP/We
 ### Quick Start (Docker Compose)
 1. Clone the repository:
    ```bash
-   git clone <repo_url>
+   git clone https://github.com/Shamshuu/High-Performance-Time-Series-Analytics-API-with-PostgreSQL-and-Redis
    cd High-Performance-Time-Series-Analytics-API-with-PostgreSQL-and-Redis
    ```
 2. Copy environment file:
